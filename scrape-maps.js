@@ -22,7 +22,7 @@ const keywords = argKeywords ? argKeywords.split(',').map(k => k.trim().toLowerC
 console.log(`\n🗺️  Google Maps Scraper`);
 console.log(`   Business: ${query}`);
 console.log(`   Location: ${location}`);
-if (keywords.length) console.log(`   Keywords: ${keywords.join(', ')}`);
+console.log(`   Keywords: ${keywords}`);
 console.log(`   Collect: website=${COLLECT_WEBSITE} phone=${COLLECT_PHONE} facebook=${COLLECT_FACEBOOK} address=${COLLECT_ADDRESS}\n`);
 
 // ─── Supabase ─────────────────────────────────────────────────
@@ -122,17 +122,38 @@ async function scrapeGoogleMaps() {
     const url = `https://www.google.com/maps/search/${encodedQuery}`;
     console.log(`    URL: ${url}`);
 
+    // ── Wait for page to stabilize ─────────────────────────────
+    console.log(`    ⏳ Loading Google Maps...`);
     try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     } catch (e) {
-      console.log(`    ⚠ networkidle timeout, continuing...`);
+      console.log(`    ⚠ page.goto error: ${e.message}`);
     }
-    await page.waitForTimeout(3000);
+    console.log(`    ⏳ Waiting for Google Maps to load...`);
+    await page.waitForTimeout(5000);
+
+    // Check for consent / accept button
+    try {
+      const acceptBtn = await page.$('button[aria-label*="Accept"], button[id*="agree"], button:has-text("I agree")');
+      if (acceptBtn) {
+        await acceptBtn.click();
+        console.log(`    ✓ Accepted consent dialog`);
+        await page.waitForTimeout(2000);
+      }
+    } catch (_) {}
+
+    // Check for CAPTCHA / blocked page
+    const pageText = await page.evaluate(() => document.body.innerText.substring(0, 300));
+    if (pageText.includes('unusual traffic') || pageText.includes('CAPTCHA') || pageText.includes('not a robot')) {
+      console.log(`    ⚠ BLOCKED by Google: CAPTCHA or unusual traffic detected`);
+      console.log(`    PAGE: ${pageText.replace(/\n/g, ' ').substring(0, 150)}`);
+      return [];
+    }
 
     // ── Scroll to load all results ─────────────────────────────
     console.log(`    📜 Scrolling to load results...`);
     try {
-      await page.waitForSelector('a[href*="/maps/place/"], [data-cid], div.Nv2PK', { timeout: 15000 });
+      await page.waitForSelector('a[href*="/maps/place/"], [data-cid], div.Nv2PK', { timeout: 20000 });
       console.log(`    ✓ Initial results detected`);
     } catch (e) {
       const path = `/tmp/gmaps-no-results-${Date.now()}.png`;
