@@ -7,6 +7,36 @@ on:
         description: 'Search query (e.g. restaurants in Dhaka)'
         required: true
         type: string
+      location:
+        description: 'Location (e.g. Dhaka, Bangladesh)'
+        required: true
+        type: string
+        default: 'Dhaka, Bangladesh'
+      keywords:
+        description: 'Extra keywords to filter results (comma-separated, optional)'
+        required: false
+        type: string
+        default: ''
+      collect_website:
+        description: 'Collect Website data'
+        required: false
+        type: boolean
+        default: true
+      collect_phone:
+        description: 'Collect Phone data'
+        required: false
+        type: boolean
+        default: true
+      collect_facebook:
+        description: 'Collect Facebook data (via website lookup)'
+        required: false
+        type: boolean
+        default: true
+      collect_address:
+        description: 'Collect Address data'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   scrape:
@@ -29,7 +59,15 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: Run scraper
-        run: node scrape-maps.js "${{ github.event.inputs.query }}"
+        run: |
+          node scrape-maps.js \
+            "${{ github.event.inputs.query }}" \
+            "${{ github.event.inputs.location }}" \
+            "${{ github.event.inputs.keywords }}" \
+            "${{ github.event.inputs.collect_website }}" \
+            "${{ github.event.inputs.collect_phone }}" \
+            "${{ github.event.inputs.collect_facebook }}" \
+            "${{ github.event.inputs.collect_address }}"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
