@@ -196,7 +196,8 @@ async function scrapeGoogleMaps() {
 
     // ── Extract business data ──────────────────────────────────
     console.log(`    🔍 Extracting business data...`);
-    const extracted = await page.evaluate((kw, collectAddr, collectPhone, collectWeb) => {
+    const extracted = await page.evaluate((opts) => {
+      const { kw, collectAddr, collectPhone, collectWeb } = opts;
       const results = [];
       const seenUrls = new Set();
 
@@ -264,7 +265,7 @@ async function scrapeGoogleMaps() {
         results.push({ name, address, phone, website, rating, place_id, lat, lng });
       }
       return results;
-    }, keywords, COLLECT_ADDRESS, COLLECT_PHONE, COLLECT_WEBSITE);
+    }, { kw: keywords, collectAddr: COLLECT_ADDRESS, collectPhone: COLLECT_PHONE, collectWeb: COLLECT_WEBSITE });
 
     console.log(`    ✓ Extracted ${extracted.length} unique businesses`);
 
