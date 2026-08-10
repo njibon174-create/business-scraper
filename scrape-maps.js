@@ -17,7 +17,7 @@ function randomDelay(min = 2000, max = 4000) {
 }
 
 // ─────────────────────────────────────────
-// findFacebookLink - from existing scrape.js
+// findFacebookLink
 // ─────────────────────────────────────────
 async function findFacebookLink(websiteUrl) {
   if (!websiteUrl) return null;
@@ -45,7 +45,7 @@ async function findFacebookLink(websiteUrl) {
 }
 
 // ─────────────────────────────────────────
-// saveToSupabase - from existing scrape.js
+// saveToSupabase
 // NOTE: source='playwright' to distinguish from API version
 // ─────────────────────────────────────────
 async function saveToSupabase(businessData) {
@@ -86,6 +86,7 @@ async function saveToSupabase(businessData) {
 async function scrapeGoogleMaps(query) {
   const businesses = [];
   let browser;
+  let screenshotCount = 0;
 
   console.log(`\n🗺️  Launching browser for: "${query}"`);
 
@@ -109,15 +110,13 @@ async function scrapeGoogleMaps(query) {
     console.log(`    URL: ${url}`);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    // Wait for result panel to load
-    // Selector: the business listings container in Google Maps
+    // Wait for result panel to load — 15s timeout
     try {
-      await page.waitForSelector('div[role="feed"], div[data-result-span], .Nv2PK', { timeout: 10000 });
+      await page.waitForSelector('div[role="feed"], div[data-result-span], .Nv2PK', { timeout: 15000 });
     } catch (e) {
       console.log(`    ⚠ Could not find result feed selector: ${e.message}`);
-      // Try alternative selector
       try {
-        await page.waitForSelector('#search', { timeout: 5000 });
+        await page.waitForSelector('#search', { timeout: 15000 });
       } catch {
         console.log(`    ⚠ Page may not have loaded correctly`);
       }
@@ -138,7 +137,7 @@ async function scrapeGoogleMaps(query) {
     }
 
     // Collect business card references
-    // Google Maps uses various selectors - try multiple
+    // Google Maps uses various selectors — try multiple
     const cardSelectors = [
       'div[role="feed"] > div > div[aria-label]',
       'div.Nv2PK',
@@ -148,18 +147,20 @@ async function scrapeGoogleMaps(query) {
     ];
 
     let cards = [];
+    let activeSelector = null;
     for (const sel of cardSelectors) {
       cards = await page.$$(sel);
       if (cards.length > 0) {
+        activeSelector = sel;
         console.log(`    ✓ Found ${cards.length} cards using selector: ${sel}`);
         break;
       }
     }
 
     if (cards.length === 0) {
-      console.log(`    ⚠ No business cards found. Taking screenshot...`);
-      await page.screenshot({ path: '/tmp/gmaps-debug.png' });
-      console.log(`    Screenshot saved to /tmp/gmaps-debug.png`);
+      const path = `/tmp/gmaps-no-cards-${Date.now()}.png`;
+      await page.screenshot({ path });
+      console.log(`    ⚠ No business cards found. Screenshot: ${path}`);
       return [];
     }
 
@@ -167,7 +168,6 @@ async function scrapeGoogleMaps(query) {
 
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
-      const cardHtml = await card.innerHTML().catch(() => '');
       const cardName = await card.getAttribute('aria-label').catch(async () =>
         await card.$eval('h3', el => el ? el.textContent : null).catch(() => `Business ${i + 1}`)
       );
@@ -175,11 +175,39 @@ async function scrapeGoogleMaps(query) {
       console.log(`\n  [${i + 1}/${cards.length}] ${cardName}`);
 
       try {
-        // Click to open details panel
-        await card.click({ timeout: 3000 });
-        await randomDelay(2000, 3500);
+        // FIX 2: Scroll into view + 1s wait before click
+        await card.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(1000);
 
-        // Wait for details panel
+        // FIX 3: Try force click with 15s timeout, fallback to JS click
+        let clicked = false;
+        try {
+          await card.click({ force: true, timeout: 15000 });
+          clicked = true;
+        } catch (clickErr) {
+          console.log(`      ⚠ card.click() failed: ${clickErr.message}`);
+          // Fallback: JS direct click
+          try {
+            await page.evaluate(el => el.click(), card);
+            clicked = true;
+            console.log(`      ✓ JS click fallback succeeded`);
+          } catch (jsErr) {
+            console.log(`      ⚠ JS click fallback also failed: ${jsErr.message}`);
+          }
+        }
+
+        if (!clicked) {
+          // FIX 4: Screenshot on click failure
+          screenshotCount++;
+          const path = `/tmp/gmaps-click-fail-${screenshotCount}-${Date.now()}.png`;
+          await page.screenshot({ path, fullPage: true });
+          console.log(`      📸 Click failure screenshot: ${path}`);
+          continue;
+        }
+
+        await randomDelay(2500, 4000);
+
+        // Wait for details panel — 15s timeout
         const detailsSelectors = [
           '[data-section-id="info"]',
           '.section-layout .section-info',
@@ -189,7 +217,7 @@ async function scrapeGoogleMaps(query) {
         let detailsLoaded = false;
         for (const sel of detailsSelectors) {
           try {
-            await page.waitForSelector(sel, { timeout: 4000 });
+            await page.waitForSelector(sel, { timeout: 15000 });
             detailsLoaded = true;
             break;
           } catch {
@@ -198,15 +226,16 @@ async function scrapeGoogleMaps(query) {
         }
 
         if (!detailsLoaded) {
-          console.log(`    ⚠ Details panel not found, skipping`);
+          // FIX 4: Screenshot if details panel doesn't open
+          screenshotCount++;
+          const path = `/tmp/gmaps-no-panel-${screenshotCount}-${Date.now()}.png`;
+          await page.screenshot({ path, fullPage: true });
+          console.log(`      ⚠ Details panel not found. Screenshot: ${path}`);
           continue;
         }
 
         // Extract data from details panel
         const data = await page.evaluate(() => {
-          const getText = (sel) => document.querySelector(sel)?.textContent?.trim() || null;
-          const getAttr = (sel, attr) => document.querySelector(sel)?.getAttribute(attr) || null;
-
           // Name
           const nameEl = document.querySelector('h1[data-item-id], h1.section-title, .section-header-title h1');
           const name = nameEl?.textContent?.trim() || null;
@@ -231,7 +260,10 @@ async function scrapeGoogleMaps(query) {
         });
 
         if (!data.name) {
-          console.log(`    ⚠ Could not extract name, skipping`);
+          screenshotCount++;
+          const path = `/tmp/gmaps-no-data-${screenshotCount}-${Date.now()}.png`;
+          await page.screenshot({ path, fullPage: true });
+          console.log(`      ⚠ Could not extract name. Screenshot: ${path}`);
           continue;
         }
 
@@ -253,8 +285,14 @@ async function scrapeGoogleMaps(query) {
         businesses.push(business);
 
       } catch (err) {
-        console.log(`    ⚠ Error extracting: ${err.message}`);
-        // Continue to next card
+        // FIX 4: Screenshot on any extraction error
+        screenshotCount++;
+        const path = `/tmp/gmaps-error-${screenshotCount}-${Date.now()}.png`;
+        try {
+          await page.screenshot({ path, fullPage: true });
+        } catch {}
+        console.log(`    ⚠ Error: ${err.message}. Screenshot: ${path}`);
+        // Continue to next card — don't crash
       }
 
       // Random delay for rate limiting / anti-detection
@@ -290,7 +328,8 @@ async function main() {
   const businesses = await scrapeGoogleMaps(query);
 
   if (businesses.length === 0) {
-    console.log(`\n⚠ No businesses scraped. Check selectors - Google Maps HTML may have changed.`);
+    console.log(`\n⚠ No businesses scraped. Check selectors — Google Maps HTML may have changed.`);
+    console.log(`   Screenshots saved to /tmp/gmaps-*.png for debugging.`);
     process.exit(0);
   }
 
