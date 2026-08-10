@@ -239,11 +239,14 @@ async function scrapeGoogleMaps() {
         const detailData = await page.evaluate(() => {
           let phone = '', website = '', address = '';
 
-          // Phone: look for tel: links — phone number is in aria-label, not textContent
+          // Phone: actual number is in href="tel:+880...", not aria-label
           const telLink = document.querySelector('a[href^="tel:"]');
-          // Strip icon chars and get the actual number
-          const stripIcons = (s) => s.replace(/[\uE0A0-\uE0FF]/g, '').trim();
-          phone = telLink ? (telLink.getAttribute('aria-label') || stripIcons(telLink.textContent || '')) : '';
+          if (telLink) {
+            const href = telLink.getAttribute('href') || '';
+            // href is "tel:+8801..." — extract just the number part
+            phone = href.replace(/^tel:/, '').replace(/[^\d+]/g, '');
+            if (!phone) phone = telLink.getAttribute('aria-label') || '';
+          }
 
           // Website: look for real website links (not google)
           const allLinks = Array.from(document.querySelectorAll('a[href^="http"]'));
@@ -256,7 +259,8 @@ async function scrapeGoogleMaps() {
           }
 
           // Address: Google Maps shows address with a  icon prefix in aria-label / text
-          // stripIcons already defined above
+          const stripIcons = (s) => s.replace(/[\uE0A0-\uE0FF]/g, '').trim();
+          const cleanAddress = (s) => s.replace(/^[\s]*Address[\s:]+/i, '').replace(/^[\s]*[^:]+:\s*/i, '').trim();
 
           const addressSelectors = [
             'button[data-item-id*="address"]',
@@ -269,10 +273,11 @@ async function scrapeGoogleMaps() {
             try {
               const el = document.querySelector(sel);
               if (el) {
-                // Try aria-label first (often has clean text)
+                // Try aria-label first (often has clean text), then strip icons and clean prefix
                 let text = el.getAttribute('aria-label') || '';
                 if (!text) text = stripIcons(el.textContent || '');
-                if (text.length > 5 && (text.match(/\d/) || text.toLowerCase().includes('dhaka') || text.toLowerCase().includes('bangladesh'))) {
+                text = cleanAddress(text);
+                if (text.length > 5 && (text.match(/\d/) || text.toLowerCase().includes('dhaka') || text.toLowerCase().includes('bangladesh') || text.toLowerCase().includes('gazipur'))) {
                   address = text;
                   break;
                 }
@@ -284,7 +289,7 @@ async function scrapeGoogleMaps() {
           if (!address) {
             const allText = Array.from(document.querySelectorAll('[role="main"] span, [role="main"] div'));
             for (const el of allText) {
-              const text = stripIcons(el.textContent || '');
+              const text = cleanAddress(stripIcons(el.textContent || ''));
               if (text.length > 8 && text.length < 200 && (/\d{4,}/.test(text) || (text.toLowerCase().includes('dhaka') && /\d/.test(text)))) {
                 address = text;
                 break;
