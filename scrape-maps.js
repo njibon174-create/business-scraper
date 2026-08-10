@@ -62,7 +62,6 @@ async function saveToSupabase(businessData) {
         website: website || null,
         address: address || null,
         rating: rating || null,
-        facebook,
         facebook_url: facebook,
         source: 'playwright',
       }, {
@@ -82,11 +81,12 @@ async function saveToSupabase(businessData) {
 
 // ─────────────────────────────────────────
 // MAIN: scrapeGoogleMaps
-// Uses JS-based direct DOM extraction (no clicks needed)
+// Uses links that point to place pages to identify businesses
 // ─────────────────────────────────────────
 async function scrapeGoogleMaps(query) {
   const businesses = [];
   let browser;
+  let screenshotCount = 0;
 
   console.log(`\n🗺️  Launching browser for: "${query}"`);
 
@@ -101,7 +101,7 @@ async function scrapeGoogleMaps(query) {
     });
     const page = await context.newPage();
 
-    // Block images/css for speed
+    // Block unnecessary resources
     await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
     await page.route('**/fonts.googleapis.com/**', route => route.abort());
     await page.route('**/fonts.gstatic.com/**', route => route.abort());
@@ -111,141 +111,175 @@ async function scrapeGoogleMaps(query) {
 
     console.log(`    URL: ${url}`);
 
-    // Navigate and wait for networkidle
+    // Navigate
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 });
     } catch (e) {
       console.log(`    ⚠ networkidle timeout, continuing...`);
-      await page.waitForTimeout(3000);
     }
-
-    // Wait for results to appear
     await page.waitForTimeout(3000);
 
-    // Debug: take initial screenshot
-    const initScreenshot = `/tmp/gmaps-init-${Date.now()}.png`;
-    await page.screenshot({ path: initScreenshot, fullPage: true });
-    console.log(`    📸 Initial screenshot: ${initScreenshot}`);
+    // ─── STEP 1: Scroll to load all results ─────────────────────────
+    console.log(`    📜 Scrolling to load results...`);
 
-    // Scroll to load more results
-    console.log(`    📜 Scrolling to load more results...`);
-    for (let scrollRound = 0; scrollRound < 5; scrollRound++) {
+    // Wait for initial results to appear
+    try {
+      await page.waitForSelector('a[href*="/maps/place/"], [data-cid], div.Nv2PK', { timeout: 15000 });
+      console.log(`    ✓ Initial results detected`);
+    } catch (e) {
+      screenshotCount++;
+      const path = `/tmp/gmaps-no-results-${screenshotCount}-${Date.now()}.png`;
+      await page.screenshot({ path, fullPage: true });
+      console.log(`    ⚠ No results detected. Screenshot: ${path}`);
+      return [];
+    }
+
+    // Scroll through the results to trigger lazy loading
+    let lastCardCount = 0;
+    let stuckCount = 0;
+    for (let scrollRound = 0; scrollRound < 8; scrollRound++) {
+      // Scroll down within the feed/list
       await page.evaluate(() => {
         const feed = document.querySelector('div[role="feed"]');
         if (feed) {
-          feed.scrollBy(0, 2000);
+          feed.scrollTop = feed.scrollHeight;
         } else {
-          window.scrollBy(0, 1500);
+          window.scrollBy(0, window.innerHeight);
         }
       });
-      await randomDelay(1500, 2000);
-      console.log(`    Scroll round ${scrollRound + 1}/5 done`);
+      await randomDelay(2000, 3000);
+
+      // Count cards after scroll
+      const cardCount = await page.evaluate(() => {
+        return document.querySelectorAll('a[href*="/maps/place/"]').length;
+      });
+      console.log(`    Scroll ${scrollRound + 1}/8: found ${cardCount} place links`);
+
+      if (cardCount === lastCardCount) {
+        stuckCount++;
+        if (stuckCount >= 3) {
+          console.log(`    ✓ No more results loading (stuck ${stuckCount} rounds)`);
+          break;
+        }
+      } else {
+        stuckCount = 0;
+      }
+      lastCardCount = cardCount;
     }
 
-    // Extract business data directly via JS — no clicks needed
-    // This avoids "element not visible" issues with Playwright clicks
-    console.log(`    🔍 Extracting business data via JS...`);
+    // ─── STEP 2: Extract business data via DOM analysis ─────────────
+    console.log(`    🔍 Extracting business data...`);
 
     const extracted = await page.evaluate(() => {
       const results = [];
 
-      // Google Maps business card selectors — most specific first
-      // The actual business listings have data-cid and are within the feed
-      const selectors = [
-        'div[role="feed"] [data-cid]',
-        'div[role="feed"] div[aria-label]',
-        'div.Nv2PK',
-        '.UaDxMd',
-      ];
+      // Find all links that point to Google Maps place pages — these are actual businesses
+      const placeLinks = Array.from(document.querySelectorAll('a[href*="/maps/place/"]'));
 
-      let cards = [];
-      for (const sel of selectors) {
-        cards = Array.from(document.querySelectorAll(sel));
-        if (cards.length > 0) {
-          console.log(`Found ${cards.length} elements with: ${sel}`);
-          break;
+      // Deduplicate — sometimes the same business appears multiple times
+      const seenUrls = new Set();
+
+      for (const link of placeLinks) {
+        const href = link.getAttribute('href') || '';
+        if (seenUrls.has(href)) continue;
+        seenUrls.add(href);
+
+        // Get the parent card container — walk up the DOM
+        let container = link;
+        for (let up = 0; up < 5; up++) {
+          container = container.parentElement;
+          if (!container) break;
+          // Check if this container has business data
+          const cid = container.getAttribute('data-cid');
+          if (cid) break;
         }
-      }
 
-      // Filter: must have actual business-like content
-      // Reject: "Price", "Distance", "Hours", sort/filter labels
-      const rejectTerms = ['price', 'distance', 'hours', 'rating', 'sort', 'filter', 'open', 'closed', 'km', 'mi'];
+        // Business name: from the link text or nearby heading
+        let name = link.textContent?.trim() || '';
 
-      for (const card of cards) {
-        // aria-label is the primary name source on Google Maps
-        const ariaLabel = card.getAttribute('aria-label') || '';
-        // h3 inside card is also a strong business name indicator
-        const h3 = card.querySelector('h3');
-        const name = h3?.textContent?.trim() || ariaLabel || '';
+        // Try to get from parent h3 or heading
+        if (!name || name.length < 2) {
+          const h3 = link.closest('[data-cid]')?.querySelector('h3') ||
+                     link.closest('div')?.querySelector('h3') ||
+                     link.closest('div')?.querySelector('[class*="title"]');
+          name = h3?.textContent?.trim() || name;
+        }
 
-        // Skip clearly non-business labels
-        const lowerName = name.toLowerCase();
+        // Clean name
+        name = name.replace(/\s+/g, ' ').trim();
+
+        // Skip if still no valid name
         if (!name || name.length < 2) continue;
-        if (rejectTerms.some(t => lowerName === t || lowerName.startsWith(t + ' '))) continue;
-        // Skip generic UI elements with no meaningful content
+
+        // Skip obvious non-business UI elements
+        const lowerName = name.toLowerCase();
+        if (lowerName.match(/^(price|hours?|rating|distance|sort|filter|open|closed|km|mi|reviews?|suggested|advertisement|popular|trending|search|available|related)/)) continue;
         if (lowerName.includes('show more')) continue;
+        if (lowerName.includes('more options')) continue;
 
-        // Address — look for address patterns
-        const addressEl = card.querySelector('[class*="address"], [class*="street"], [class*="location"], [class*="Locality"]');
-        const address = addressEl?.textContent?.trim() || '';
+        // Address: look in the card for address text
+        const cardEl = link.closest('[data-cid]') || link.closest('div');
+        const addressEl = cardEl?.querySelector('[class*="address"], [class*="street"], [class*="Locality"], [class*="location"]');
+        const address = addressEl?.textContent?.trim().replace(/\s+/g, ' ') || '';
 
-        // Rating
-        const ratingEl = card.querySelector('[aria-label*="star"], [class*="rating"]');
-        const rating = ratingEl?.getAttribute('aria-label') || ratingEl?.textContent?.trim() || '';
+        // Phone: look for tel: links
+        const telLink = cardEl?.querySelector('a[href^="tel:"]');
+        const phone = telLink?.textContent?.trim() || '';
 
-        // Phone and website links
-        const links = Array.from(card.querySelectorAll('a[href]'));
-        let phone = '';
+        // Website: look for non-google http links
+        const webLinks = Array.from(cardEl?.querySelectorAll('a[href^="http"]') || []);
         let website = '';
-        for (const link of links) {
-          const href = link.getAttribute('href') || '';
-          if (href.startsWith('tel:')) {
-            phone = link.textContent?.trim() || '';
-          } else if (href.startsWith('http') && !href.includes('google.com') && !href.includes('maps.google')) {
-            website = href;
+        for (const wl of webLinks) {
+          const wh = wl.getAttribute('href') || '';
+          if (!wh.includes('google.com') && !wh.includes('maps.google') && !wh.includes('goo.gl')) {
+            website = wh;
+            break;
           }
         }
 
-        // Lat/Lng — extract from card's URL or data attributes
-        const dataCid = card.getAttribute('data-cid') || '';
-        // Try to find coords in any URL in the card
-        const allUrls = card.outerHTML.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
-        const lat = allUrls ? parseFloat(allUrls[1]) : null;
-        const lng = allUrls ? parseFloat(allUrls[2]) : null;
+        // Rating
+        const ratingEl = cardEl?.querySelector('[aria-label*="star"]');
+        const rating = ratingEl?.getAttribute('aria-label') || '';
 
-        // Skip if we got nothing useful
-        if (!name && !address && !phone && !website) continue;
+        // Place ID from URL: /maps/place/PLACE_ID/
+        const placeIdMatch = href.match(/\/maps\/place\/([^\/]+)\//);
+        const place_id = placeIdMatch ? placeIdMatch[1] : '';
+
+        // Lat/Lng from URL: @lat,lng,zoom
+        const coordMatch = href.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+        const lat = coordMatch ? parseFloat(coordMatch[1]) : null;
+        const lng = coordMatch ? parseFloat(coordMatch[2]) : null;
 
         results.push({
           name,
           address,
-          rating,
           phone,
           website,
+          rating,
+          place_id,
           lat,
           lng,
-          place_id: dataCid || null,
         });
       }
 
       return results;
     });
 
-    console.log(`    ✓ Extracted ${extracted.length} businesses via JS`);
+    console.log(`    ✓ Extracted ${extracted.length} unique businesses`);
 
     if (extracted.length === 0) {
-      const path = `/tmp/gmaps-no-results-${Date.now()}.png`;
+      screenshotCount++;
+      const path = `/tmp/gmaps-no-biz-${screenshotCount}-${Date.now()}.png`;
       await page.screenshot({ path, fullPage: true });
       console.log(`    ⚠ No businesses extracted. Screenshot: ${path}`);
       return [];
     }
 
-    // Process each business
+    // ─── STEP 3: Process each business ─────────────────────────────
     for (let i = 0; i < extracted.length; i++) {
       const raw = extracted[i];
       console.log(`\n  [${i + 1}/${extracted.length}] ${raw.name}`);
 
-      // Build business object — use JS-extracted data directly
       const business = {
         name: raw.name,
         phone: raw.phone || null,
@@ -262,12 +296,11 @@ async function scrapeGoogleMaps(query) {
       if (business.website) console.log(`    Website: ${business.website}`);
       if (business.address) console.log(`    Address: ${business.address}`);
       if (business.rating) console.log(`    Rating: ${business.rating}`);
-      if (business.lat && business.lng) console.log(`    Lat/Lng: ${business.lat}, ${business.lng}`);
+      if (business.place_id) console.log(`    Place ID: ${business.place_id}`);
 
       businesses.push(business);
 
-      // Random delay to avoid rate limiting
-      await randomDelay(1500, 3000);
+      await randomDelay(1000, 2000);
     }
 
   } catch (error) {
@@ -325,7 +358,6 @@ async function main() {
     await randomDelay(1500, 3000);
   }
 
-  // Save locally
   const fs = await import('fs');
   const outputPath = '/tmp/scraped-maps-businesses.json';
   fs.writeFileSync(outputPath, JSON.stringify(businesses, null, 2));
