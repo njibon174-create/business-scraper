@@ -221,8 +221,8 @@ async function scrapeGoogleMaps() {
         if (link) {
           await link.click();
         } else {
-          // Fallback: navigate directly to the place URL
-          await page.goto(`https://www.google.com${href}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          // href already starts with https://www.google.com/maps/place/...
+          await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 15000 });
         }
         await page.waitForTimeout(3000); // Wait for panel to slide in or page to load
       } catch (e) {
@@ -239,9 +239,11 @@ async function scrapeGoogleMaps() {
         const detailData = await page.evaluate(() => {
           let phone = '', website = '', address = '';
 
-          // Phone: look for tel: links
+          // Phone: look for tel: links — phone number is in aria-label, not textContent
           const telLink = document.querySelector('a[href^="tel:"]');
-          phone = telLink?.textContent?.trim() || '';
+          // Strip icon chars and get the actual number
+          const stripIcons = (s) => s.replace(/[\uE0A0-\uE0FF]/g, '').trim();
+          phone = telLink ? (telLink.getAttribute('aria-label') || stripIcons(telLink.textContent || '')) : '';
 
           // Website: look for real website links (not google)
           const allLinks = Array.from(document.querySelectorAll('a[href^="http"]'));
@@ -253,21 +255,23 @@ async function scrapeGoogleMaps() {
             }
           }
 
-          // Address: look in the detail panel
-          const panel = document.querySelector('[role="main"]') || document.body;
+          // Address: Google Maps shows address with a  icon prefix in aria-label / text
+          // stripIcons already defined above
+
           const addressSelectors = [
             'button[data-item-id*="address"]',
             '[data-item-id*="address"]',
-            'div[aria-label*="Address"]',
-            'span:has-text("Address")',
+            '[aria-label*="Address"]',
+            'button:has([class*="icon"])',
             '.DqeaT', '.rogA2c', '[class*="address"]'
           ];
           for (const sel of addressSelectors) {
             try {
               const el = document.querySelector(sel);
               if (el) {
-                const text = el.textContent?.trim() || '';
-                // Make sure it looks like an address (contains numbers, Bangladesh-related keywords)
+                // Try aria-label first (often has clean text)
+                let text = el.getAttribute('aria-label') || '';
+                if (!text) text = stripIcons(el.textContent || '');
                 if (text.length > 5 && (text.match(/\d/) || text.toLowerCase().includes('dhaka') || text.toLowerCase().includes('bangladesh'))) {
                   address = text;
                   break;
@@ -276,12 +280,12 @@ async function scrapeGoogleMaps() {
             } catch (_) {}
           }
 
-          // Fallback: search for address-like text in the panel
+          // Fallback: scan visible text for address-like patterns
           if (!address) {
-            const paragraphs = Array.from(document.querySelectorAll('div[role="main"] p, div[role="main"] span, div[role="main"] div'));
-            for (const p of paragraphs) {
-              const text = p.textContent?.trim() || '';
-              if (text.length > 8 && text.length < 200 && /\d{4,}/.test(text) || (text.toLowerCase().includes('dhaka') && text.match(/\d/))) {
+            const allText = Array.from(document.querySelectorAll('[role="main"] span, [role="main"] div'));
+            for (const el of allText) {
+              const text = stripIcons(el.textContent || '');
+              if (text.length > 8 && text.length < 200 && (/\d{4,}/.test(text) || (text.toLowerCase().includes('dhaka') && /\d/.test(text)))) {
                 address = text;
                 break;
               }
