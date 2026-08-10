@@ -138,6 +138,16 @@ async function scrapeGoogleMaps() {
       const path = `/tmp/gmaps-no-results-${Date.now()}.png`;
       await page.screenshot({ path, fullPage: true });
       console.log(`    ⚠ No results detected. Screenshot: ${path}`);
+      // Debug: count all links and divs
+      const debugInfo = await page.evaluate(() => {
+        const placeLinks = document.querySelectorAll('a[href*="/maps/place/"]').length;
+        const nv2pk = document.querySelectorAll('div.Nv2PK').length;
+        const allLinks = document.links.length;
+        const bodyText = document.body.innerText.substring(0, 200);
+        return { placeLinks, nv2pk, allLinks, bodyText };
+      });
+      console.log(`    DEBUG: placeLinks=${debugInfo.placeLinks} nv2pk=${debugInfo.nv2pk} allLinks=${debugInfo.allLinks}`);
+      console.log(`    PAGE TEXT: ${debugInfo.bodyText.replace(/\n/g,' ')}`);
       return [];
     }
 
