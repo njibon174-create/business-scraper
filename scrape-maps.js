@@ -53,7 +53,7 @@ async function saveToSupabase(businessData) {
     return false;
   }
   try {
-    const { name, phone, website, address, rating, facebook } = businessData;
+    const { name, phone, website, address, rating, facebook, lat, lng, place_id } = businessData;
     const { error } = await supabase
       .from('businesses')
       .upsert({
@@ -63,9 +63,12 @@ async function saveToSupabase(businessData) {
         address: address || null,
         rating: rating || null,
         facebook_url: facebook,
+        lat: lat || null,
+        lng: lng || null,
+        place_id: place_id || null,
         source: 'playwright',
       }, {
-        onConflict: 'name,address',
+        onConflict: 'place_id',
       });
 
     if (error) {
