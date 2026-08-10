@@ -70,7 +70,7 @@ async function saveToSupabase(businessData) {
         website: website || null,
         address: address || null,
         rating: rating || null,
-        facebook,
+        facebook_url: facebook,
         source: 'api',
         place_id: place_id || null,
       }, {
@@ -78,7 +78,7 @@ async function saveToSupabase(businessData) {
       });
 
     if (error) {
-      // Fallback: upsert on name+address
+      // Try without place_id
       const { error: err2 } = await supabase
         .from('businesses')
         .upsert({
@@ -87,7 +87,7 @@ async function saveToSupabase(businessData) {
           website: website || null,
           address: address || null,
           rating: rating || null,
-          facebook,
+          facebook_url: facebook,
           source: 'api',
         }, {
           onConflict: 'name,address',

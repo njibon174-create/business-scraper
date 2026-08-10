@@ -63,6 +63,7 @@ async function saveToSupabase(businessData) {
         address: address || null,
         rating: rating || null,
         facebook,
+        facebook_url: facebook,
         source: 'playwright',
       }, {
         onConflict: 'name,address',
@@ -148,48 +149,51 @@ async function scrapeGoogleMaps(query) {
     const extracted = await page.evaluate(() => {
       const results = [];
 
-      // Try multiple card selectors
+      // Google Maps business card selectors — most specific first
+      // The actual business listings have data-cid and are within the feed
       const selectors = [
-        'div[role="feed"] > div > div[aria-label]',
+        'div[role="feed"] [data-cid]',
+        'div[role="feed"] div[aria-label]',
         'div.Nv2PK',
         '.UaDxMd',
-        'div[data-cid]',
-        '[data-result-span]',
       ];
 
       let cards = [];
       for (const sel of selectors) {
         cards = Array.from(document.querySelectorAll(sel));
         if (cards.length > 0) {
-          console.log(`Found ${cards.length} cards with selector: ${sel}`);
+          console.log(`Found ${cards.length} elements with: ${sel}`);
           break;
         }
       }
 
-      if (cards.length === 0) {
-        // Last resort: look for any element with business-like structure
-        cards = Array.from(document.querySelectorAll('[data-cid]'));
-      }
+      // Filter: must have actual business-like content
+      // Reject: "Price", "Distance", "Hours", sort/filter labels
+      const rejectTerms = ['price', 'distance', 'hours', 'rating', 'sort', 'filter', 'open', 'closed', 'km', 'mi'];
 
       for (const card of cards) {
-        // Get the business name — usually in aria-label or h3/h2 inside card
+        // aria-label is the primary name source on Google Maps
         const ariaLabel = card.getAttribute('aria-label') || '';
+        // h3 inside card is also a strong business name indicator
         const h3 = card.querySelector('h3');
-        const h2 = card.querySelector('h2');
-        const nameEl = h3 || h2 || card.querySelector('[class*="title"]') || card.querySelector('span');
-        const name = nameEl?.textContent?.trim() || ariaLabel || '';
+        const name = h3?.textContent?.trim() || ariaLabel || '';
 
+        // Skip clearly non-business labels
+        const lowerName = name.toLowerCase();
         if (!name || name.length < 2) continue;
+        if (rejectTerms.some(t => lowerName === t || lowerName.startsWith(t + ' '))) continue;
+        // Skip generic UI elements with no meaningful content
+        if (lowerName.includes('show more')) continue;
 
-        // Address — look for address-like text
-        const addressEl = card.querySelector('[class*="address"], [class*="street"], [class*="location"]');
+        // Address — look for address patterns
+        const addressEl = card.querySelector('[class*="address"], [class*="street"], [class*="location"], [class*="Locality"]');
         const address = addressEl?.textContent?.trim() || '';
 
-        // Rating — look for stars
+        // Rating
         const ratingEl = card.querySelector('[aria-label*="star"], [class*="rating"]');
         const rating = ratingEl?.getAttribute('aria-label') || ratingEl?.textContent?.trim() || '';
 
-        // Website/Phone — look for links
+        // Phone and website links
         const links = Array.from(card.querySelectorAll('a[href]'));
         let phone = '';
         let website = '';
@@ -202,11 +206,15 @@ async function scrapeGoogleMaps(query) {
           }
         }
 
-        // Lat/Lng — extract from data attributes or URL
+        // Lat/Lng — extract from card's URL or data attributes
         const dataCid = card.getAttribute('data-cid') || '';
-        const latMatch = card.outerHTML.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
-        const lat = latMatch ? parseFloat(latMatch[1]) : null;
-        const lng = latMatch ? parseFloat(latMatch[2]) : null;
+        // Try to find coords in any URL in the card
+        const allUrls = card.outerHTML.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+        const lat = allUrls ? parseFloat(allUrls[1]) : null;
+        const lng = allUrls ? parseFloat(allUrls[2]) : null;
+
+        // Skip if we got nothing useful
+        if (!name && !address && !phone && !website) continue;
 
         results.push({
           name,

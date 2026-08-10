@@ -61,7 +61,7 @@ The scraper expects a `businesses` table with these columns:
 | website | text | Website URL |
 | address | text | Full address |
 | rating | text | Rating string |
-| facebook | text | Facebook page URL |
+| facebook_url | text | Facebook page URL |
 | source | text | 'api' or 'playwright' |
 | place_id | text | Google place ID (if available) |
 | created_at | timestamp | Auto-managed |
