@@ -196,7 +196,7 @@ async function scrapeGoogleMaps() {
 
     // ── Extract business data ──────────────────────────────────
     console.log(`    🔍 Extracting business data...`);
-    const extracted = await page.evaluate(() => {
+    const extracted = await page.evaluate((kw, collectAddr, collectPhone, collectWeb) => {
       const results = [];
       const seenUrls = new Set();
 
@@ -224,26 +224,26 @@ async function scrapeGoogleMaps() {
         if (/^(price|hours?|rating|distance|sort|filter|open|closed|km|mi|reviews?|suggested|advertisement|popular|trending|search|available|related)/.test(lower)) continue;
         if (lower.includes('show more') || lower.includes('more options')) continue;
 
-        // Keyword filter
-        if (![...document.querySelectorAll('[class*="address"], [class*="street"], [class*="Locality"]')].some(el => {
+        // Keyword filter — kw is passed from Node.js scope
+        if (kw.length > 0 && ![...document.querySelectorAll('[class*="address"], [class*="street"], [class*="Locality"]')].some(el => {
           const text = el?.textContent?.trim() || '';
-          return keywords.some(k => text.toLowerCase().includes(k));
-        }) && keywords.length > 0) continue;
+          return kw.some(k => text.toLowerCase().includes(k));
+        })) continue;
 
         const cardEl = container || link;
 
         // Collect only enabled fields
-        const address = COLLECT_ADDRESS ? (() => {
+        const address = collectAddr ? (() => {
           const el = cardEl?.querySelector('[class*="address"], [class*="street"], [class*="Locality"], [class*="location"]');
           return el?.textContent?.trim().replace(/\s+/g, ' ') || '';
         })() : '';
 
-        const phone = COLLECT_PHONE ? (() => {
+        const phone = collectPhone ? (() => {
           const tel = cardEl?.querySelector('a[href^="tel:"]');
           return tel?.textContent?.trim() || '';
         })() : '';
 
-        const website = COLLECT_WEBSITE ? (() => {
+        const website = collectWeb ? (() => {
           for (const wl of Array.from(cardEl?.querySelectorAll('a[href^="http"]') || [])) {
             const wh = wl.getAttribute('href') || '';
             if (!wh.includes('google.com') && !wh.includes('maps.google') && !wh.includes('goo.gl')) return wh;
@@ -253,7 +253,6 @@ async function scrapeGoogleMaps() {
 
         const ratingEl = cardEl?.querySelector('[aria-label*="star"]');
         const ratingRaw = ratingEl?.getAttribute('aria-label') || '';
-        // Extract numeric rating: "5.0 stars 5 Reviews" → 5.0
         const rating = parseFloat(ratingRaw.match(/[\d.]+/)?.[0]) || null;
 
         const placeIdMatch = href.match(/\/maps\/place\/([^\/]+)\//);
@@ -265,7 +264,7 @@ async function scrapeGoogleMaps() {
         results.push({ name, address, phone, website, rating, place_id, lat, lng });
       }
       return results;
-    });
+    }, keywords, COLLECT_ADDRESS, COLLECT_PHONE, COLLECT_WEBSITE);
 
     console.log(`    ✓ Extracted ${extracted.length} unique businesses`);
 
