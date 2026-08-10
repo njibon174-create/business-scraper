@@ -75,7 +75,7 @@ async function saveToSupabase(businessData) {
       phone:         COLLECT_PHONE    ? (phone    || null) : null,
       website:       COLLECT_WEBSITE  ? (website  || null) : null,
       address:       COLLECT_ADDRESS  ? (address  || null) : null,
-      rating:        rating  || null,
+      rating:        rating || null,
       facebook_url:  facebook || null,
       lat:           lat     || null,
       lng:           lng     || null,
@@ -221,7 +221,9 @@ async function scrapeGoogleMaps() {
         })() : '';
 
         const ratingEl = cardEl?.querySelector('[aria-label*="star"]');
-        const rating = ratingEl?.getAttribute('aria-label') || '';
+        const ratingRaw = ratingEl?.getAttribute('aria-label') || '';
+        // Extract numeric rating: "5.0 stars 5 Reviews" → 5.0
+        const rating = parseFloat(ratingRaw.match(/[\d.]+/)?.[0]) || null;
 
         const placeIdMatch = href.match(/\/maps\/place\/([^\/]+)\//);
         const place_id = placeIdMatch ? placeIdMatch[1] : '';
